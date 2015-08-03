@@ -1,0 +1,117 @@
+#! /usr/bin/env perl
+
+use 5.020;
+use utf8;
+use YAML::Tiny;
+use File::Slurp;
+
+binmode STDOUT, ':utf8';
+my $contents = read_file( 'tracklist.yml', binmode => ':utf8' );
+my $spec = YAML::Tiny->read_string( $contents )->[0];
+
+sub tracks {
+  my $spec = shift;
+  my $sep = " — ";
+  my $safe_sep = " - ";
+
+  my $t = 0;
+  my @tracks;
+  for my $track ( @{ $spec->{tracks} } ) {
+    push @tracks, {
+      artist   => $track->{artist} // $spec->{artist},
+      album    => $spec->{album},
+      composer => $track->{composer} // $spec->{composer},
+      piece    => $track->{piece} // $spec->{piece},
+      movement => $track->{movement},
+      year     => $track->{year} // $spec->{year},
+      genre    => $track->{genre} // $spec->{genre},
+      track    => ++$t,
+      filename => ( $track->{key} // $track->{composer} ) . '.' . ( $track->{extension} // $spec->{extension} ),
+    };
+  }
+  my $l = length $t;
+  $_->{track} = sprintf "%0*u", $l, $_->{track} for @tracks;
+  $_->{trackcount} = $t for @tracks;
+
+  return @tracks;
+}
+
+sub title_from_track {
+  my $track = shift;
+  join ' — ', grep defined, $track->{composer}, $track->{piece}, $track->{movement};
+}
+
+sub outfile_from_track {
+  my $track = shift;
+  my $outfile = join ' - ', grep defined, $track->{artist}, $track->{album}, $track->{track}, $track->{composer}, $track->{piece}, $track->{movement};
+  $outfile =~ s/№//g;
+  $outfile;
+}
+
+sub encode_aac {
+  my $track = shift;
+  my $title = title_from_track $track;
+  my $outfile = outfile_from_track $track;
+
+  say << "EOT";
+sox "$track->{filename}" -t wav - |
+fdkaac -m4 --moov-before-mdat \\
+       --artist "$track->{artist}" \\
+       --album "$track->{album}" \\
+       --genre "$track->{genre}" \\
+       --date "$track->{year}" \\
+       --title "$title" \\
+       --composer "$track->{composer}" \\
+       --track "$track->{track}/$track->{trackcount}" \\
+       -o "$outfile.m4a" -
+EOT
+}
+
+sub metaflac {
+  my $track = shift;
+  my $title = title_from_track $track;
+  my $outfile = outfile_from_track $track;
+
+  print << "EOT";
+metaflac --dont-use-padding --remove-all "$track->{filename}"
+metaflac --dont-use-padding \\
+         --set-tag=ARTIST="$track->{artist}" \\
+         --set-tag=ALBUM="$track->{album}" \\
+         --set-tag=GENRE="$track->{genre}" \\
+         --set-tag=DATE="$track->{year}" \\
+         --set-tag=TITLE="$title" \\
+         --set-tag=COMPOSER="$track->{composer}" \\
+         --set-tag=TRACKNUMBER="$track->{track}/$track->{trackcount}" \\
+         "$track->{filename}"
+ln "$track->{filename}" "$outfile.flac"
+EOT
+}
+
+metaflac $_ for tracks $spec;
+
+__DATA__
+--
+album: Album
+artist: Artist
+composer: Composer
+piece: Piece
+year: Year
+genre: Classical
+tracks:
+-
+  artist: Another artist
+  composer: Another composer
+  piece: Another piece
+  movement: Movement
+  year: Another year
+  genre: Another genre
+__END__
+
+Youtube example:
+
+ffmpeg -loop 1 -framerate 1/5 -i Deslandres.png -i Deslandres.m4a -acodec copy -vcodec h264 -preset veryslow -qp 0 -shortest Deslandres.mp4
+
+Cover art
+
+mp4art -z --add Affiche.jpg export/*.m4a
+metaflac --dont-use-padding --import-picture-from='|image/jpeg|||Affiche.jpg' *.flac
